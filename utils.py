@@ -78,7 +78,9 @@ def trans2DataLoader(data, batch_size=32, shuffle=True, drop_last=False):
     X = data.iloc[:, :-1].to_numpy()
     y = data.iloc[:, -1:].to_numpy()
     dataset = torch.utils.data.TensorDataset(torch.from_numpy(X.reshape(X.shape[0], -1, 30)), torch.from_numpy(y))
-    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+    # pin_memory=True speeds up host-to-device transfers (RAM to GPU)
+    # num_workers=0 is usually faster for small TensorDatasets on Windows
+    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, pin_memory=True, num_workers=0)
     return loader
 
 
@@ -103,9 +105,9 @@ def build_cross_datasets(config, subject_name):
     dev_dataset = torch.utils.data.TensorDataset(torch.from_numpy(dev_x.astype(np.float32)), torch.from_numpy(dev_y.astype(np.int64)))
     test_dataset = torch.utils.data.TensorDataset(torch.from_numpy(test_x.astype(np.float32)), torch.from_numpy(test_y.astype(np.int64)))
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
-    dev_loader = torch.utils.data.DataLoader(dev_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, pin_memory=True, num_workers=0)
+    dev_loader = torch.utils.data.DataLoader(dev_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, pin_memory=True, num_workers=0)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, pin_memory=True, num_workers=0)
 
     return train_loader, dev_loader, test_loader
 

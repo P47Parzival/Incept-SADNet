@@ -1,6 +1,7 @@
 # coding: UTF-8
 import time
 import argparse
+import torch
 from importlib import import_module
 
 from train_test import train_MAG
@@ -16,7 +17,15 @@ parser.add_argument('--model', type=str, default='CompactCNN')
 # for one subject to split the train and test dataset
 # leave-one-subject-out
 parser.add_argument('--mode', type=str, default='False')
+parser.add_argument('--compile', action='store_true', help='Enable torch.compile for potential speedup (PyTorch 2.0+)')
+parser.add_argument('--resume', action='store_true', help='Resume training from last checkpoint')
 args = parser.parse_args()
+
+# Enable cuDNN benchmark for faster performance on fixed input sizes
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True
+    # Enable TF32 for Ampere+ GPUs (RTX 30xx/40xx) - ~2x matmul speedup with no code changes
+    torch.set_float32_matmul_precision('high')
 
 
 # get all subjects path
@@ -50,21 +59,42 @@ def inner_subject_train():
         data_list = all_subjects
         # print(data_list)
         for subject_name in data_list:
+            subject_id = subject_name[-3:]
+            
+            # Check if this subject is already fully trained (skip if resume and completed)
+            if args.resume:
+                save_dir = os.path.join(config.f1_save_path, config.model_name)
+                checkpoint_path = os.path.join(save_dir, f'checkpoint_{subject_id}_inter.pt')
+                has_checkpoint = os.path.exists(checkpoint_path)
+                # If no checkpoint exists, check if subject was already completed
+                if not has_checkpoint:
+                    f1_path = os.path.join(save_dir, f'f1_{subject_id}_inter.ckpt')
+                    auc_path = os.path.join(save_dir, f'auc_{subject_id}_inter.ckpt')
+                    if os.path.exists(f1_path) and os.path.exists(auc_path):
+                        print(f"[RESUME] Subject {subject_id} already completed, skipping...")
+                        continue
+            
             drop_last = True
             print('loading data...')
-            # config.data_path = dataset + '/raw/' + subject_name  # data/raw/sxx
             config.data_path = subject_name
             print(config.data_path)
-            train_iter, test_iter, dev_iter = build_datasets(config, subject_name[-3:], mode=False, oversample=True,
+            train_iter, test_iter, dev_iter = build_datasets(config, subject_id, mode=False, oversample=True,
                                                              drop_last=drop_last)
             time_dif = get_time_dif(start_time)
             print("loading data usage:", time_dif)
 
             # train and test
             model = x.Model(config).to(config.device)
+            
+            if args.compile and hasattr(torch, 'compile'):
+                print("Compiling model...")
+                try:
+                    model = torch.compile(model)
+                except Exception as e:
+                    print(f"torch.compile failed, falling back to eager mode: {e}")
+            
             print(model.parameters)
-            # train(config, model, train_iter, dev_iter, test_iter)
-            train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name[-3:], "inter")
+            train_MAG(config, model, train_iter, dev_iter, test_iter, subject_id, "inter", resume=args.resume)
 
 
 # cross subject
@@ -83,19 +113,39 @@ def leave_one_subject_out():
 
         # 选一个数据集作为测试集，其余的混合后作为训练集和验证集
         for subject_name in data_list:
+            subject_id = subject_name[-3:]
+            
+            # Check if this subject is already fully trained (skip if resume and completed)
+            if args.resume:
+                save_dir = os.path.join(config.f1_save_path, config.model_name)
+                checkpoint_path = os.path.join(save_dir, f'checkpoint_{subject_id}_cross.pt')
+                has_checkpoint = os.path.exists(checkpoint_path)
+                if not has_checkpoint:
+                    f1_path = os.path.join(save_dir, f'f1_{subject_id}_cross.ckpt')
+                    auc_path = os.path.join(save_dir, f'auc_{subject_id}_cross.ckpt')
+                    if os.path.exists(f1_path) and os.path.exists(auc_path):
+                        print(f"[RESUME] Subject {subject_id} already completed, skipping...")
+                        continue
+            
             print('loading data...')
-            # config.data_path = dataset + '/raw/' + subject_name  # data/raw/sxx
             config.data_path = subject_name
             print(config.data_path)
-            train_iter, test_iter, dev_iter = build_cross_datasets(config, subject_name[-3:])
+            train_iter, test_iter, dev_iter = build_cross_datasets(config, subject_id)
             time_dif = get_time_dif(start_time)
             print("loading data usage:", time_dif)
 
             # train and test
             model = x.Model(config).to(config.device)
+            
+            if args.compile and hasattr(torch, 'compile'):
+                print("Compiling model...")
+                try:
+                    model = torch.compile(model)
+                except Exception as e:
+                    print(f"torch.compile failed, falling back to eager mode: {e}")
+            
             print(model.parameters)
-            # train(config, model, train_iter, dev_iter, test_iter)
-            train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name[-3:], "cross")
+            train_MAG(config, model, train_iter, dev_iter, test_iter, subject_id, "cross", resume=args.resume)
 
 
 if __name__ == '__main__':

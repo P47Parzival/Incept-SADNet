@@ -29,10 +29,10 @@ class Config(object):
             dataset + '/class.txt', encoding='utf-8').readlines()]  # 类别名单
 
         # for model
-        self.learning_rate = 1e-3
+        self.learning_rate = 2e-3
         self.num_epoch = 100
         self.require_improvement = 1000
-        self.batch_size = 64  # Increased from 32 for better GPU utilization
+        self.batch_size = 128  # Increased from 32 for better GPU utilization
         self.dropout = 0.5
 
 class SEBlock(nn.Module):

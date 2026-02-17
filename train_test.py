@@ -6,10 +6,10 @@ import torch.nn.functional as F
 from sklearn import metrics
 import time
 from utils import get_time_dif, build_datasets
-from torch.utils.tensorboard import SummaryWriter
 import wandb
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, auc
+from torch.utils.tensorboard import SummaryWriter
 
 
 # 使用xavier初始化网络权重
@@ -34,16 +34,15 @@ def train_epoch(config, model, train_iter, optimizer):
     tr_loss = 0
     total_steps = 0
     for step, (X, y) in enumerate(tqdm(train_iter, desc='Iteration')):
-        X = X.to(config.device)
-        y = y.to(config.device)
+        X = X.to(config.device, non_blocking=True)
+        y = y.to(config.device, non_blocking=True)
+        optimizer.zero_grad(set_to_none=True)
         y_hat = model(X)
-        # print(y_hat.shape)    [batch_size, num_classes]
         loss = F.cross_entropy(y_hat, y.squeeze().long())
         loss.backward()
+        optimizer.step()
         tr_loss += loss.item()
         total_steps += 1
-        optimizer.step()
-        optimizer.zero_grad()
     return tr_loss / total_steps
 
 
@@ -53,8 +52,8 @@ def eval_epoch(config, model, dev_iter):
     total_steps = 0
     with torch.no_grad():
         for step, (X, y) in enumerate(tqdm(dev_iter, desc='Iteration')):
-            X = X.to(config.device)
-            y = y.to(config.device)
+            X = X.to(config.device, non_blocking=True)
+            y = y.to(config.device, non_blocking=True)
             y_hat = model(X)
             loss = F.cross_entropy(y_hat, y.squeeze().long())
             dev_loss += loss.item()
@@ -70,8 +69,8 @@ def test_epoch(config, model, test_iter):
     y_hats_all = []
     with torch.no_grad():
         for X, y in test_iter:
-            X = X.to(config.device)
-            y = y.to(config.device)
+            X = X.to(config.device, non_blocking=True)
+            y = y.to(config.device, non_blocking=True)
             y_hat = model(X)
             loss = F.cross_entropy(y_hat, y.squeeze().long())
             loss_total += loss
@@ -152,7 +151,7 @@ def test_model(config, model, test_iter, use_zero=False):
 
 
 # reference MAG
-def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode="inter"):
+def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode="inter", resume=False):
     run = wandb.init(project="DSADNet", entity=None, config=config.__dict__, reinit=True)
     wandb.config.update(config.__dict__, allow_val_change=True)  # 记录config中设置的参数
     valid_losses = []
@@ -160,15 +159,35 @@ def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode
     test_aucs = []
     best_f1 = 0
     best_auc = 0
+    start_epoch = 0
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     # to get single model for certain subject
     import os
+    # Use local variables, do not modify config in place
     save_dir = os.path.join(config.f1_save_path, config.model_name)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    config.f1_save_path = os.path.join(save_dir, f'f1_{subject_name}_{mode}.ckpt')
-    config.auc_save_path = os.path.join(save_dir, f'auc_{subject_name}_{mode}.ckpt')
-    for i in range(int(config.num_epoch)):
+    
+    current_f1_save_path = os.path.join(save_dir, f'f1_{subject_name}_{mode}.ckpt')
+    current_auc_save_path = os.path.join(save_dir, f'auc_{subject_name}_{mode}.ckpt')
+    checkpoint_path = os.path.join(save_dir, f'checkpoint_{subject_name}_{mode}.pt')
+    
+    # --- Resume from checkpoint ---
+    if resume and os.path.exists(checkpoint_path):
+        print(f"[RESUME] Loading checkpoint for {subject_name} ({mode})...")
+        checkpoint = torch.load(checkpoint_path, map_location=config.device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1  # resume from the NEXT epoch
+        best_f1 = checkpoint['best_f1']
+        best_auc = checkpoint['best_auc']
+        valid_losses = checkpoint['valid_losses']
+        test_f1s = checkpoint['test_f1s']
+        test_aucs = checkpoint['test_aucs']
+        print(f"[RESUME] Resuming from epoch {start_epoch}/{config.num_epoch} "
+              f"(best_f1={best_f1:.4f}, best_auc={best_auc:.4f})")
+    
+    for i in range(start_epoch, int(config.num_epoch)):
         train_loss = train_epoch(config, model, train_iter, optimizer)
         valid_loss = eval_epoch(config, model, dev_iter)
         test_acc, test_mae, test_corr, test_f1, test_auc = test_model(config, model, test_iter)
@@ -182,10 +201,23 @@ def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode
         test_aucs.append(test_auc)
         if test_f1 > best_f1:
             best_f1 = test_f1
-            torch.save(model.state_dict(), config.f1_save_path)
+            torch.save(model.state_dict(), current_f1_save_path)
         if test_auc > best_auc:
             best_auc = test_auc
-            torch.save(model.state_dict(), config.auc_save_path)
+            torch.save(model.state_dict(), current_auc_save_path)
+        
+        # --- Save checkpoint every epoch for crash recovery ---
+        torch.save({
+            'epoch': i,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_f1': best_f1,
+            'best_auc': best_auc,
+            'valid_losses': valid_losses,
+            'test_f1s': test_f1s,
+            'test_aucs': test_aucs,
+        }, checkpoint_path)
+        
         wandb.log(
             (
                 {
@@ -201,6 +233,12 @@ def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode
                 }
             )
         )
+    
+    # Training complete for this subject - clean up checkpoint
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
+        print(f"[CHECKPOINT] Removed completed checkpoint for {subject_name}")
+    
     wandb.log(({"avg_test_f1": sum(test_f1s) / len(test_f1s)}))
     wandb.log(({"avg_test_auc": sum(test_aucs) / len(test_aucs)}))
     run.finish()

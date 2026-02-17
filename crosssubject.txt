@@ -1,0 +1,11 @@
+Run summary:
+wandb:    avg_test_auc 0.52633
+wandb:     avg_test_f1 0.48266
+wandb:   best_test_auc 0.54834
+wandb:    best_test_f1 0.49819
+wandb: best_valid_loss 0.8533
+wandb:        test_acc 0.57107
+wandb:       test_corr 0.0162
+wandb:    test_f_score 0.49055
+wandb:        test_mae 0.67288
+wandb:      train_loss 0.58448
