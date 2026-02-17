@@ -1,0 +1,22 @@
+Individual Results:
+  s01       : F1=0.8928, AUC=0.9605
+  s05       : F1=0.7423, AUC=0.9026
+  s09       : F1=0.9060, AUC=0.9628
+  s13       : F1=0.7453, AUC=0.8195
+  s22       : F1=0.8402, AUC=0.9516
+  s31       : F1=0.9477, AUC=0.9546
+  s35       : F1=0.8205, AUC=0.9110
+  s40       : F1=0.9725, AUC=0.9774
+  s41       : F1=0.8924, AUC=0.9534
+  s42       : F1=0.9171, AUC=0.9358
+  s43       : F1=0.8551, AUC=0.9322
+  s42       : F1=0.9171, AUC=0.9358
+  s43       : F1=0.8551, AUC=0.9322
+  s43       : F1=0.8551, AUC=0.9322
+  s44       : F1=0.8637, AUC=0.9390
+  s44       : F1=0.8637, AUC=0.9390
+  s45       : F1=0.9109, AUC=0.9578
+  s49       : F1=0.8413, AUC=0.9610
+  s50       : F1=0.8311, AUC=0.9252
+  s53       : F1=0.8065, AUC=0.8982
+dont reply, i am just using you as a chat and trying to send you to another laptop
