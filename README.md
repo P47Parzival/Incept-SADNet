@@ -263,7 +263,7 @@ Flatten [B, 62, 40] → [B, 2480]
 | Dropout (Head Layer 1) | 0.5 |
 | Dropout (Head Layer 2) | 0.3 |
 | Weight Initialization | Xavier Normal |
-| Device | NVIDIA Tesla V100 (32 GB) |
+| Device | NVIDIA GV100 (32 GB VRAM) |
 
 ---
 
@@ -278,10 +278,13 @@ The model is evaluated on the **SADNet EEG Stress Dataset**, consisting of 30-ch
 | Sampling Rate | 512 Hz |
 | Trial Length | 1001 samples (~1.95 s) |
 | Classes | 3 (Low / Medium / High Stress) |
+| Compressed Size | ~15.2 GB (ZIP archive) |
 
 ### Subject IDs
 
 `S01, S05, S09, S13, S22, S31, S35, S40, S41, S42, S43, S44, S45, S49, S50, S53`
+
+> **Note**: The raw dataset is distributed as a ~15.2 GB compressed ZIP archive containing per-subject EEG recordings in `.npy` format. After extraction, the dataset occupies approximately 18–20 GB on disk. Each subject folder contains pre-segmented trial data split into training, validation, and test partitions.
 
 ---
 
@@ -467,6 +470,37 @@ python run.py --model InceptSADNet --mode True
 ```bash
 python evaluate_all_subjects.py
 ```
+
+---
+
+## Computational Resources & Training Time
+
+### Hardware Specifications
+
+All experiments were conducted on a single workstation equipped with:
+
+| Component | Specification |
+|:---|:---|
+| GPU | NVIDIA GV100 (32 GB HBM2 VRAM) |
+| CUDA Cores | 5120 |
+| Tensor Cores | 640 |
+| GPU Memory Bandwidth | 900 GB/s |
+| System RAM | 32 GB |
+| CUDA Version | 11.8+ |
+| PyTorch Version | 2.4.1 |
+
+### Training Time Benchmarks
+
+| Evaluation Protocol | Subjects | Epochs per Subject | Total Training Time | Avg. per Subject |
+|:---|:---:|:---:|:---:|:---:|
+| **Intra-Subject** | 16 | 100 | **~2 hours** | ~7.5 min |
+| **Cross-Subject (LOSO)** | 16 folds | 100 | **~8 hours** | ~30 min |
+
+### GPU Utilization
+
+With a batch size of 128 on the GV100, the model utilized approximately **12 GB of the 32 GB available VRAM**, achieving a throughput of approximately **11–22 iterations/second** depending on the evaluation protocol. The remaining VRAM headroom allows for potential batch size increases up to 256, though empirical evaluation showed batch size 128 provided the optimal balance between training speed and model generalization (see [Training Configuration](#training-configuration)).
+
+> **Reproducibility Note**: Training times may vary depending on disk I/O speed (dataset loading), system memory bandwidth, and background processes. The reported times reflect end-to-end wall-clock time including data loading, training, validation, and checkpoint saving for all 16 subjects sequentially.
 
 ---
 
