@@ -5,18 +5,28 @@
 // ------------- CONFIGURATION -------------
 const char* ssid = "Airtel_dhru_1078";
 const char* password = "Air@13811";
-const char* mqtt_server = "192.168.1.7"; // IP address of PC running docker-compose
+const char* mqtt_server = "192.168.1.9"; // IP address of PC running docker-compose
 const int mqtt_port = 1883;
 const char* mqtt_topic = "sensors/eeg";
 
+// --- LED CONFIGURATION ---
+const int BLUE_LED_PIN = 2; // Change '2' to whichever GPIO pin your blue LED is wired to
+TaskHandle_t blinkTaskHandle = NULL;
+
+// FreeRTOS Task for strictly independent blinking
+void blinkTask(void *pvParameters) {
+  pinMode(BLUE_LED_PIN, OUTPUT);
+  while(true) {
+    digitalWrite(BLUE_LED_PIN, HIGH);
+    vTaskDelay(3000 / portTICK_PERIOD_MS); // Wait 3 seconds
+    digitalWrite(BLUE_LED_PIN, LOW);
+    vTaskDelay(3000 / portTICK_PERIOD_MS); // Wait 3 seconds
+  }
+}
+// -------------------------
+
 WiFiClient espClient;
 PubSubClient client(espClient);
-
-// Neural Network requires [30, 1001]
-// The ESP32 doesn't have enough RAM to comfortably buffer and JSON-serialize 30x1001 floats (30,030 floats = ~120KB just for raw floats without JSON overhead)
-// So we will transmit in smaller chunks or downsampled representations depending on your exact hardware setup.
-// To perfectly mimic the expected structure, we will send a payload indicating a chunk of signals.
-// For this example, we generate and send dummy signal values.
 
 void setup_wifi() {
   delay(10);
@@ -53,6 +63,19 @@ void reconnect() {
 
 void setup() {
   Serial.begin(115200);
+  
+  // --- LED SETUP (FreeRTOS Task) ---
+  // This spins up a completely separate thread just for blinking the LED
+  // It will never be blocked by WiFi or MQTT delays!
+  xTaskCreate(
+    blinkTask,   /* Task function. */
+    "BlinkTask", /* String with name of task. */
+    1024,        /* Stack size in bytes. */
+    NULL,        /* Parameter passed as input of the task */
+    1,           /* Priority of the task. */
+    &blinkTaskHandle); /* Task handle. */
+  // -----------------
+
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   
@@ -61,14 +84,14 @@ void setup() {
 }
 
 void loop() {
+  // The LED blinking is now handled invisibly by the FreeRTOS BlinkTask.
+  // We no longer need millis() logic here!
+
   if (!client.connected()) {
     reconnect();
   }
   client.loop();
 
-  // We recommend sending data in smaller chunks (e.g., 10 samples for 30 channels at a time)
-  // The Python backend will accumulate them until it has 1001 samples.
-  
   // Allocate a large JSON document (Adjust size depending on payload)
   DynamicJsonDocument doc(4096);
   JsonArray payload = doc.to<JsonArray>();

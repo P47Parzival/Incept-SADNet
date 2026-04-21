@@ -3,15 +3,41 @@ import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
-import { Activity, Brain, AlertTriangle, Radio, RefreshCcw } from 'lucide-react';
+import { Activity, Brain, AlertTriangle, Radio, RefreshCcw, LayoutGrid } from 'lucide-react';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
 const WEBSOCKET_URL = "ws://localhost:8000/ws";
 
+// A highly optimized, lightweight chart for the 30-channel grid
+const MiniChart = ({ data, color }: { data: number[], color: string }) => {
+  const chartData = {
+    labels: Array.from({ length: 60 }, (_, i) => i.toString()), // Fixed generic labels
+    datasets: [{
+      data: data,
+      borderColor: color,
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.1
+    }]
+  };
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 0 },
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: { x: { display: false }, y: { display: false } },
+    layout: { padding: { top: 5, bottom: 5 } }
+  };
+
+  return <Line data={chartData} options={options as any} />;
+};
+
 function App() {
   const [prediction, setPrediction] = useState<string>("Initializing...");
-  const [signalData, setSignalData] = useState<number[]>([]);
+  // Now managing a 2D array: 30 channels, each keeping up to 60 data points
+  const [signalData, setSignalData] = useState<number[][]>(Array.from({ length: 30 }, () => []));
   const [isConnected, setIsConnected] = useState<boolean>(false);
 
   useEffect(() => {
@@ -29,10 +55,13 @@ function App() {
         const data = JSON.parse(event.data);
         setPrediction(data.prediction);
 
-        setSignalData((prev) => {
-          const newData = [...prev, data.raw_signal[0]]; // Visualizing Channel 1
-          if (newData.length > 60) newData.shift();
-          return newData;
+        // data.raw_signal is an array of size 30
+        setSignalData((prevGrid) => {
+          return prevGrid.map((channelHistory, idx) => {
+            const newHistory = [...channelHistory, data.raw_signal[idx]];
+            if (newHistory.length > 60) newHistory.shift();
+            return newHistory;
+          });
         });
       };
 
@@ -58,7 +87,8 @@ function App() {
           border: "border-green-500/50",
           text: "text-green-400",
           bg: "bg-green-500/10",
-          icon: <Activity className="w-12 h-12 text-green-400" />
+          icon: <Activity className="w-12 h-12 text-green-400" />,
+          chartColor: "#4ade80"
         };
       case "Neutral":
         return {
@@ -66,7 +96,8 @@ function App() {
           border: "border-stone-500/50",
           text: "text-stone-300",
           bg: "bg-stone-500/10",
-          icon: <Brain className="w-12 h-12 text-stone-300" />
+          icon: <Brain className="w-12 h-12 text-stone-300" />,
+          chartColor: "#a8a29e"
         };
       case "Drowsy":
         return {
@@ -74,7 +105,8 @@ function App() {
           border: "border-red-500/50",
           text: "text-red-400",
           bg: "bg-red-500/10",
-          icon: <AlertTriangle className="w-12 h-12 text-red-400 animate-pulse" />
+          icon: <AlertTriangle className="w-12 h-12 text-red-400 animate-pulse" />,
+          chartColor: "#ef4444"
         };
       default:
         return {
@@ -82,52 +114,17 @@ function App() {
           border: "border-white/10",
           text: "text-gray-400",
           bg: "bg-gray-800/50",
-          icon: <RefreshCcw className="w-12 h-12 text-gray-500 animate-spin" />
+          icon: <RefreshCcw className="w-12 h-12 text-gray-500 animate-spin" />,
+          chartColor: "#6366f1"
         };
     }
   };
 
   const visuals = getStatusVisuals(prediction);
 
-  const chartData = {
-    labels: Array.from({ length: signalData.length }, (_, i) => i.toString()),
-    datasets: [
-      {
-        label: 'EEG Channel 1',
-        data: signalData,
-        borderColor: prediction === "Drowsy" ? '#ef4444' : '#6366f1',
-        backgroundColor: prediction === "Drowsy" ? 'rgba(239, 68, 68, 0.1)' : 'rgba(99, 102, 241, 0.1)',
-        borderWidth: 2,
-        tension: 0.4,
-        fill: true,
-        pointRadius: 0,
-        pointHoverRadius: 4,
-      }
-    ]
-  };
-
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 0 },
-    scales: {
-      y: {
-        grid: { color: 'rgba(255, 255, 255, 0.05)' },
-        ticks: { color: 'rgba(255, 255, 255, 0.5)' }
-      },
-      x: {
-        grid: { display: false },
-        ticks: { display: false }
-      }
-    },
-    plugins: {
-      legend: { display: false }
-    }
-  };
-
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-gray-100 font-sans selection:bg-indigo-500/30 overflow-x-hidden">
-      
+
       {/* Background Orbs */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600/20 blur-[120px] rounded-full" />
@@ -135,12 +132,12 @@ function App() {
       </div>
 
       <main className="relative max-w-7xl mx-auto px-6 py-12 flex flex-col gap-8 z-10">
-        
+
         {/* Header */}
         <header className="flex justify-between items-center pb-6 border-b border-white/5">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
-              <Brain className="w-6 h-6 text-white" />
+            <div className="flex items-center justify-center">
+              <img src="/logo.png" alt="InceptSADNet Logo" className="w-16 h-16 object-contain" />
             </div>
             <div>
               <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-gray-400">
@@ -163,7 +160,7 @@ function App() {
 
         {/* Top Widgets Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          
+
           {/* Main Status Panel */}
           <div className={`col-span-1 lg:col-span-1 rounded-3xl p-8 border backdrop-blur-xl transition-all duration-500 ${visuals.glow} ${visuals.border} ${visuals.bg} flex flex-col items-center justify-center min-h-[300px]`}>
             <div className="mb-6 p-4 rounded-full bg-black/20">
@@ -185,7 +182,7 @@ function App() {
               <p className="text-4xl font-bold text-white mb-1">512 <span className="text-lg text-gray-500 font-normal">Hz</span></p>
               <p className="text-sm text-gray-500">30 Channels via MQTT</p>
             </div>
-            
+
             <div className="rounded-3xl p-8 bg-white/5 border border-white/10 backdrop-blur-xl flex flex-col justify-center">
               <div className="flex items-center gap-3 mb-4">
                 <Activity className="w-5 h-5 text-purple-400" />
@@ -195,29 +192,39 @@ function App() {
               <p className="text-sm text-gray-500">Inference via InceptSADNet</p>
             </div>
           </div>
-          
+
         </div>
 
-        {/* Live Chart Section */}
-        <div className="rounded-3xl p-6 bg-white/5 border border-white/10 backdrop-blur-xl h-[400px] flex flex-col">
+        {/* Live Chart Section - 30 Channels Grid */}
+        <div className="rounded-3xl p-6 bg-white/5 border border-white/10 backdrop-blur-xl flex flex-col">
           <div className="flex items-center justify-between mb-6 px-2">
             <h2 className="font-semibold text-gray-300 tracking-wide flex items-center gap-2">
-              <Activity className="w-5 h-5" /> Live Signal (Pre-Frontal Cortex)
+              <LayoutGrid className="w-5 h-5" /> Full Scalp Telemetry
             </h2>
             <div className="px-3 py-1 rounded-md bg-indigo-500/20 text-indigo-300 text-xs font-bold border border-indigo-500/20">
-              CHANNEL 1 (Fp1)
+              30 CHANNELS
             </div>
           </div>
-          <div className="grow relative">
-            {signalData.length > 0 ? (
-              <Line data={chartData} options={chartOptions} />
-            ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
-                <RefreshCcw className="w-8 h-8 animate-spin mb-4 opacity-50" />
-                <p>Waiting for ESP32 data stream...</p>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 gap-4">
+            {signalData.map((channelHistory, idx) => (
+              <div key={idx} className="bg-black/20 border border-white/5 rounded-xl p-3 h-32 flex flex-col hover:border-white/20 transition-colors overflow-hidden">
+                <div className="text-[11px] text-gray-500 font-mono mb-2 flex justify-between z-10">
+                  <span>CH_{(idx + 1).toString().padStart(2, '0')}</span>
+                </div>
+                <div className="grow relative w-full h-full">
+                  {channelHistory.length > 0 ? (
+                    <MiniChart data={channelHistory} color={visuals.chartColor} />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="w-full h-px bg-white/10 border-dashed"></div>
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
+            ))}
           </div>
+
         </div>
 
       </main>
