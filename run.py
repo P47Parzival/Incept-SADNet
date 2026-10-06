@@ -12,7 +12,8 @@ import warnings
 import wandb
 
 parser = argparse.ArgumentParser(description='bci project')
-parser.add_argument('--model', type=str, default='CompactCNN')
+parser.add_argument('--model', type=str, default='InceptSADNet',
+                    help='Model module name, optionally prefixed with its package (e.g. models.ablations.InceptSADNet_no_se)')
 # two mode：inner, outer
 # for one subject to split the train and test dataset
 # leave-one-subject-out
@@ -20,6 +21,12 @@ parser.add_argument('--mode', type=str, default='False')
 parser.add_argument('--compile', action='store_true', help='Enable torch.compile for potential speedup (PyTorch 2.0+)')
 parser.add_argument('--resume', action='store_true', help='Resume training from last checkpoint')
 args = parser.parse_args()
+
+
+def get_model_module(model_name):
+    module_name = model_name if '.' in model_name else 'models.' + model_name
+    return import_module(module_name)
+
 
 # Enable cuDNN benchmark for faster performance on fixed input sizes
 if torch.cuda.is_available():
@@ -44,20 +51,15 @@ def get_all_subjects(dataset):
 # inner subject
 def inner_subject_train():
     dataset = 'data'
-    # model_name = ['CompactCNN', 'DeepConvNet', 'EEGInception', 'EEGNet', 'EEGResNet', 'InterpretableCNN',
-    #               'ShallowConvNet']
-    model_name = ['InceptSADNet']
+    model_name = [args.model]
     all_subjects = get_all_subjects(dataset)
     for index in range(len(model_name)):
-        x = import_module('models.' + model_name[index])
+        x = get_model_module(model_name[index])
         config = x.Config(dataset)
         start_time = time.time()
 
         # loading data
-        # for 27 subjects
-        # data_list = os.listdir(dataset + '/raw')
         data_list = all_subjects
-        # print(data_list)
         for subject_name in data_list:
             subject_id = subject_name[-3:]
             
@@ -100,14 +102,13 @@ def inner_subject_train():
 # cross subject
 def leave_one_subject_out():
     dataset = 'data'
-    model_name = ['InceptSADNet']
+    model_name = [args.model]
     # 首先得到所有被试的文件名
     all_subjects = get_all_subjects(dataset)
-    # 选model
     for index in range(len(model_name)):
         data_list = all_subjects
 
-        x = import_module('models.' + model_name[index])
+        x = get_model_module(model_name[index])
         config = x.Config(dataset)
         start_time = time.time()
 
