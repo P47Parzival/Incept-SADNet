@@ -1,5 +1,6 @@
 # coding: UTF-8
 import numpy as np
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,6 +11,21 @@ import wandb
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, auc
 from torch.utils.tensorboard import SummaryWriter
+
+
+def get_save_dir(config, seed=27):
+    model_name = config.model_name if seed == 27 else f"{config.model_name}_seed{seed}"
+    return os.path.join(config.f1_save_path, model_name)
+
+
+def has_completed_subject(config, subject_name, mode, seed=27):
+    save_dir = get_save_dir(config, seed)
+    checkpoint_path = os.path.join(save_dir, f'checkpoint_{subject_name}_{mode}.pt')
+    if os.path.exists(checkpoint_path):
+        return False
+    f1_path = os.path.join(save_dir, f'f1_{subject_name}_{mode}.ckpt')
+    auc_path = os.path.join(save_dir, f'auc_{subject_name}_{mode}.ckpt')
+    return os.path.exists(f1_path) and os.path.exists(auc_path)
 
 
 # 使用xavier初始化网络权重
@@ -55,7 +71,7 @@ def eval_epoch(config, model, dev_iter):
             X = X.to(config.device, non_blocking=True)
             y = y.to(config.device, non_blocking=True)
             y_hat = model(X)
-            loss = F.cross_entropy(y_hat, y.squeeze().long())
+            loss = F.cross_entropy(y_hat, y.view(-1).long())
             dev_loss += loss.item()
             total_steps += 1
     return dev_loss / total_steps
@@ -72,7 +88,7 @@ def test_epoch(config, model, test_iter):
             X = X.to(config.device, non_blocking=True)
             y = y.to(config.device, non_blocking=True)
             y_hat = model(X)
-            loss = F.cross_entropy(y_hat, y.squeeze().long())
+            loss = F.cross_entropy(y_hat, y.view(-1).long())
             loss_total += loss
             labels = y.data.cpu().numpy()
             # predict = torch.max(y_hat.data, 1)[1].cpu().numpy()
@@ -82,7 +98,7 @@ def test_epoch(config, model, test_iter):
             labels_all = np.append(labels_all, labels)
             predict_all = np.append(predict_all, predict)
             y_hats_all.append(y_hat.cpu().numpy())
-    return predict_all, labels_all, np.array(y_hats_all).reshape(-1, 3)
+    return predict_all, labels_all, np.concatenate(y_hats_all, axis=0)
 
 
 def test_model(config, model, test_iter, use_zero=False):
@@ -151,20 +167,20 @@ def test_model(config, model, test_iter, use_zero=False):
 
 
 # reference MAG
-def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode="inter", resume=False):
+def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode="inter", resume=False, seed=27):
     run = wandb.init(project="DSADNet", entity=None, config=config.__dict__, reinit=True)
     wandb.config.update(config.__dict__, allow_val_change=True)  # 记录config中设置的参数
     valid_losses = []
-    test_f1s = []
-    test_aucs = []
-    best_f1 = 0
-    best_auc = 0
+    dev_f1s = []
+    dev_aucs = []
+    best_f1 = -1
+    best_auc = -1
+    best_epoch = -1
     start_epoch = 0
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     # to get single model for certain subject
-    import os
     # Use local variables, do not modify config in place
-    save_dir = os.path.join(config.f1_save_path, config.model_name)
+    save_dir = get_save_dir(config, seed)
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     
@@ -176,34 +192,39 @@ def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode
     if resume and os.path.exists(checkpoint_path):
         print(f"[RESUME] Loading checkpoint for {subject_name} ({mode})...")
         checkpoint = torch.load(checkpoint_path, map_location=config.device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1  # resume from the NEXT epoch
-        best_f1 = checkpoint['best_f1']
-        best_auc = checkpoint['best_auc']
-        valid_losses = checkpoint['valid_losses']
-        test_f1s = checkpoint['test_f1s']
-        test_aucs = checkpoint['test_aucs']
-        print(f"[RESUME] Resuming from epoch {start_epoch}/{config.num_epoch} "
-              f"(best_f1={best_f1:.4f}, best_auc={best_auc:.4f})")
+        if 'dev_f1s' not in checkpoint:
+            print("[RESUME] Checkpoint uses the old test-selected format; starting this subject from scratch.")
+        else:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1  # resume from the NEXT epoch
+            best_f1 = checkpoint['best_f1']
+            best_auc = checkpoint['best_auc']
+            best_epoch = checkpoint['best_epoch']
+            valid_losses = checkpoint['valid_losses']
+            dev_f1s = checkpoint['dev_f1s']
+            dev_aucs = checkpoint['dev_aucs']
+            print(f"[RESUME] Resuming from epoch {start_epoch}/{config.num_epoch} "
+                  f"(best_dev_f1={best_f1:.4f}, best_dev_auc={best_auc:.4f})")
     
     for i in range(start_epoch, int(config.num_epoch)):
         train_loss = train_epoch(config, model, train_iter, optimizer)
         valid_loss = eval_epoch(config, model, dev_iter)
-        test_acc, test_mae, test_corr, test_f1, test_auc = test_model(config, model, test_iter)
+        dev_acc, dev_mae, dev_corr, dev_f1, dev_auc = test_model(config, model, dev_iter)
         print(
-            "epoch:{}, train_loss:{}, valid_loss:{}, test_f1:{}, test_auc:{}".format(
-                i, train_loss, valid_loss, test_f1, test_auc
+            "epoch:{}, train_loss:{}, valid_loss:{}, dev_f1:{}, dev_auc:{}".format(
+                i, train_loss, valid_loss, dev_f1, dev_auc
             )
         )
         valid_losses.append(valid_loss)
-        test_f1s.append(test_f1)
-        test_aucs.append(test_auc)
-        if test_f1 > best_f1:
-            best_f1 = test_f1
+        dev_f1s.append(dev_f1)
+        dev_aucs.append(dev_auc)
+        if dev_f1 > best_f1:
+            best_f1 = dev_f1
+            best_epoch = i
             torch.save(model.state_dict(), current_f1_save_path)
-        if test_auc > best_auc:
-            best_auc = test_auc
+        if dev_auc > best_auc:
+            best_auc = dev_auc
             torch.save(model.state_dict(), current_auc_save_path)
         
         # --- Save checkpoint every epoch for crash recovery ---
@@ -213,9 +234,10 @@ def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode
             'optimizer_state_dict': optimizer.state_dict(),
             'best_f1': best_f1,
             'best_auc': best_auc,
+            'best_epoch': best_epoch,
             'valid_losses': valid_losses,
-            'test_f1s': test_f1s,
-            'test_aucs': test_aucs,
+            'dev_f1s': dev_f1s,
+            'dev_aucs': dev_aucs,
         }, checkpoint_path)
         
         wandb.log(
@@ -223,26 +245,33 @@ def train_MAG(config, model, train_iter, dev_iter, test_iter, subject_name, mode
                 {
                     "train_loss": train_loss,
                     "valid_loss": valid_loss,
-                    "test_acc": test_acc,
-                    "test_mae": test_mae,
-                    "test_corr": test_corr,
-                    "test_f_score": test_f1,
-                    "best_valid_loss": min(valid_losses),
-                    "best_test_f1": max(test_f1s),
-                    "best_test_auc": max(test_aucs),
+                    "dev_f1": dev_f1,
+                    "dev_auc": dev_auc,
                 }
             )
         )
     
+    model.load_state_dict(torch.load(current_f1_save_path, map_location=config.device))
+    test_acc, test_mae, test_corr, test_f1, test_auc = test_model(config, model, test_iter)
+
     # Training complete for this subject - clean up checkpoint
     if os.path.exists(checkpoint_path):
         os.remove(checkpoint_path)
         print(f"[CHECKPOINT] Removed completed checkpoint for {subject_name}")
     
-    wandb.log(({"avg_test_f1": sum(test_f1s) / len(test_f1s)}))
-    wandb.log(({"avg_test_auc": sum(test_aucs) / len(test_aucs)}))
+    wandb.log(({
+        "test_acc": test_acc,
+        "test_f1": test_f1,
+        "test_auc": test_auc,
+        "best_epoch": best_epoch,
+    }))
     run.finish()
     f = open(config.model_name+'_result.txt', 'a+')
-    f.write('best_test_f1:{}, best_test_auc:{}\n'.format(max(test_f1s), max(test_aucs)))
+    f.write(
+        'subject:{}, mode:{}, seed:{}, best_epoch:{}, best_dev_f1:{}, '
+        'test_acc:{}, best_test_f1:{}, best_test_auc:{}\n'.format(
+            subject_name, mode, seed, best_epoch, best_f1, test_acc, test_f1, test_auc
+        )
+    )
     f.close()
-    return max(test_f1s)
+    return test_f1

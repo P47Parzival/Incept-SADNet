@@ -15,13 +15,13 @@ from sklearn.model_selection import train_test_split
 
 
 # 设置随机数种子，方便复现
-def set_seed():
-    np.random.seed(27)
-    torch.manual_seed(27)  # 设置CPU生成随机数的种子，方便下次复现实验结果
-    torch.cuda.manual_seed_all(27)  # 在GPU中设置生成随机数的种子。当设置的种子固定下来的时候，之后依次pytorch生成的随机数序列也被固定下来
+def set_seed(seed=27):
+    np.random.seed(seed)
+    torch.manual_seed(seed)  # 设置CPU生成随机数的种子，方便下次复现实验结果
+    torch.cuda.manual_seed_all(seed)  # 在GPU中设置生成随机数的种子。当设置的种子固定下来的时候，之后依次pytorch生成的随机数序列也被固定下来
     torch.backends.cudnn.deterministic = True  # 保证每次运行网络的时候相同输入的输出是固定的
-    random.seed(27)
-    os.environ["PYTHONHASHSEED"] = str(27)
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
 
 
 # 获取时间差
@@ -89,9 +89,6 @@ def build_cross_datasets(config, subject_name):
     # subject_name : sxx
     print("build datasets...")
     batch_size = config.batch_size
-    shuffle = True
-    drop_last = True
-
     train_x = np.load('data/cross/train_'+subject_name+'_x.npy')
     train_y = np.load('data/cross/train_'+subject_name+'_y.npy')
 
@@ -105,9 +102,9 @@ def build_cross_datasets(config, subject_name):
     dev_dataset = torch.utils.data.TensorDataset(torch.from_numpy(dev_x.astype(np.float32)), torch.from_numpy(dev_y.astype(np.int64)))
     test_dataset = torch.utils.data.TensorDataset(torch.from_numpy(test_x.astype(np.float32)), torch.from_numpy(test_y.astype(np.int64)))
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, pin_memory=True, num_workers=0)
-    dev_loader = torch.utils.data.DataLoader(dev_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, pin_memory=True, num_workers=0)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, pin_memory=True, num_workers=0)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, pin_memory=True, num_workers=0)
+    dev_loader = torch.utils.data.DataLoader(dev_dataset, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True, num_workers=0)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True, num_workers=0)
 
     return train_loader, dev_loader, test_loader
 
@@ -129,10 +126,10 @@ def build_datasets(config, subject_name, mode=False, oversample=True, drop_last=
     # print(y_res.shape)
     # X_res = X_res.reshape(X_res.shape[0], -1, 30)  # reshape
     # train_data, test_data, dev_data = split_data(X_res, y_res)
-    train_data, test_data, dev_data = split_data(X, y)
+    train_data, dev_data, test_data = split_data(X, y)
     train_loader = trans2DataLoader(train_data, config.batch_size, drop_last=drop_last)
-    dev_loader = trans2DataLoader(dev_data, config.batch_size, drop_last=drop_last)
-    test_loader = trans2DataLoader(test_data, config.batch_size, drop_last=drop_last)
+    dev_loader = trans2DataLoader(dev_data, config.batch_size, shuffle=False, drop_last=False)
+    test_loader = trans2DataLoader(test_data, config.batch_size, shuffle=False, drop_last=False)
     return train_loader, dev_loader, test_loader
 
 

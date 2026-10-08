@@ -4,7 +4,7 @@ import argparse
 import torch
 from importlib import import_module
 
-from train_test import train_MAG
+from train_test import train_MAG, has_completed_subject
 from utils import get_time_dif, build_datasets, set_seed, build_cross_datasets
 from train_test import init_network
 import os
@@ -20,6 +20,7 @@ parser.add_argument('--model', type=str, default='InceptSADNet',
 parser.add_argument('--mode', type=str, default='False')
 parser.add_argument('--compile', action='store_true', help='Enable torch.compile for potential speedup (PyTorch 2.0+)')
 parser.add_argument('--resume', action='store_true', help='Resume training from last checkpoint')
+parser.add_argument('--seed', type=int, default=27, help='Random seed for model initialization and training')
 args = parser.parse_args()
 
 
@@ -62,25 +63,19 @@ def inner_subject_train():
         data_list = all_subjects
         for subject_name in data_list:
             subject_id = subject_name[-3:]
+            set_seed(args.seed)
             
             # Check if this subject is already fully trained (skip if resume and completed)
             if args.resume:
-                save_dir = os.path.join(config.f1_save_path, config.model_name)
-                checkpoint_path = os.path.join(save_dir, f'checkpoint_{subject_id}_inter.pt')
-                has_checkpoint = os.path.exists(checkpoint_path)
-                # If no checkpoint exists, check if subject was already completed
-                if not has_checkpoint:
-                    f1_path = os.path.join(save_dir, f'f1_{subject_id}_inter.ckpt')
-                    auc_path = os.path.join(save_dir, f'auc_{subject_id}_inter.ckpt')
-                    if os.path.exists(f1_path) and os.path.exists(auc_path):
-                        print(f"[RESUME] Subject {subject_id} already completed, skipping...")
-                        continue
+                if has_completed_subject(config, subject_id, "inter", args.seed):
+                    print(f"[RESUME] Subject {subject_id} already completed, skipping...")
+                    continue
             
             drop_last = True
             print('loading data...')
             config.data_path = subject_name
             print(config.data_path)
-            train_iter, test_iter, dev_iter = build_datasets(config, subject_id, mode=False, oversample=True,
+            train_iter, dev_iter, test_iter = build_datasets(config, subject_id, mode=False, oversample=True,
                                                              drop_last=drop_last)
             time_dif = get_time_dif(start_time)
             print("loading data usage:", time_dif)
@@ -96,7 +91,8 @@ def inner_subject_train():
                     print(f"torch.compile failed, falling back to eager mode: {e}")
             
             print(model.parameters)
-            train_MAG(config, model, train_iter, dev_iter, test_iter, subject_id, "inter", resume=args.resume)
+            train_MAG(config, model, train_iter, dev_iter, test_iter, subject_id, "inter",
+                      resume=args.resume, seed=args.seed)
 
 
 # cross subject
@@ -115,23 +111,18 @@ def leave_one_subject_out():
         # 选一个数据集作为测试集，其余的混合后作为训练集和验证集
         for subject_name in data_list:
             subject_id = subject_name[-3:]
+            set_seed(args.seed)
             
             # Check if this subject is already fully trained (skip if resume and completed)
             if args.resume:
-                save_dir = os.path.join(config.f1_save_path, config.model_name)
-                checkpoint_path = os.path.join(save_dir, f'checkpoint_{subject_id}_cross.pt')
-                has_checkpoint = os.path.exists(checkpoint_path)
-                if not has_checkpoint:
-                    f1_path = os.path.join(save_dir, f'f1_{subject_id}_cross.ckpt')
-                    auc_path = os.path.join(save_dir, f'auc_{subject_id}_cross.ckpt')
-                    if os.path.exists(f1_path) and os.path.exists(auc_path):
-                        print(f"[RESUME] Subject {subject_id} already completed, skipping...")
-                        continue
+                if has_completed_subject(config, subject_id, "cross", args.seed):
+                    print(f"[RESUME] Subject {subject_id} already completed, skipping...")
+                    continue
             
             print('loading data...')
             config.data_path = subject_name
             print(config.data_path)
-            train_iter, test_iter, dev_iter = build_cross_datasets(config, subject_id)
+            train_iter, dev_iter, test_iter = build_cross_datasets(config, subject_id)
             time_dif = get_time_dif(start_time)
             print("loading data usage:", time_dif)
 
@@ -146,11 +137,12 @@ def leave_one_subject_out():
                     print(f"torch.compile failed, falling back to eager mode: {e}")
             
             print(model.parameters)
-            train_MAG(config, model, train_iter, dev_iter, test_iter, subject_id, "cross", resume=args.resume)
+            train_MAG(config, model, train_iter, dev_iter, test_iter, subject_id, "cross",
+                      resume=args.resume, seed=args.seed)
 
 
 if __name__ == '__main__':
-    set_seed()
+    set_seed(args.seed)
     # ignore the warning
     warnings.filterwarnings('ignore')
     # offline
