@@ -1,6 +1,6 @@
-# InceptSADNet: Inception-based Stress and Affect Detection Network
+# InceptSADNet: Inception-Based EEG Classification for Driving-Task Response Categories
 
-> A hybrid CNN-Transformer architecture for multi-class EEG-based stress classification using multi-scale temporal feature extraction, squeeze-and-excitation attention, and self-attention mechanisms.
+> A hybrid CNN-Transformer architecture for three-class EEG classification with multi-scale temporal feature extraction, squeeze-and-excitation attention, and self-attention. The current preprocessing derives targets from reaction times; it does not provide direct stress or affect labels.
 
 ---
 
@@ -31,11 +31,11 @@
 
 ## Overview
 
-**InceptSADNet** extends the conventional single-scale temporal convolution paradigm used in EEG classification models (such as EEGNet and ShallowConvNet) by introducing an **Inception-inspired multi-scale temporal front-end** coupled with a **Transformer encoder** for long-range temporal dependency modeling. The architecture is designed for **three-class stress classification** (Low / Medium / High stress) from 30-channel EEG recordings sampled at 512 Hz.
+**InceptSADNet** extends the conventional single-scale temporal convolution paradigm used in EEG classification models (such as EEGNet and ShallowConvNet) by introducing an **Inception-inspired multi-scale temporal front-end** coupled with a **Transformer encoder** for long-range temporal dependency modeling. The current preprocessing creates three response-time-derived target categories. Direct stress or affect classification is not established by the available target-generation code.
 
 ### Key Design Principles
 
-1. **Multi-Scale Temporal Sensitivity**: Three parallel temporal convolution branches with kernel sizes of 15, 31, and 63 samples capture oscillatory patterns at different frequency resolutions (~34 Hz, ~16 Hz, and ~8 Hz effective bandwidths respectively).
+1. **Multi-Scale Temporal Sensitivity**: Three parallel temporal convolution branches with kernel sizes of 15, 31, and 63 samples capture EEG features over different temporal receptive fields.
 2. **Channel Recalibration via SE Attention**: A Squeeze-and-Excitation block dynamically reweights the importance of feature channels after spatial filtering, suppressing noisy or irrelevant frequency bands.
 3. **Self-Attention for Temporal Dependencies**: A 3-layer Transformer encoder with multi-head self-attention captures long-range temporal correlations across the sequence of embedded EEG patches.
 4. **Gentle Funnel Classification**: A progressively narrowing fully-connected head (`2480 → 512 → 64 → 3`) preserves the rich feature representation from the Transformer while providing sufficient regularization for generalization.
@@ -109,13 +109,13 @@ Raw EEG Input [B, 1001, 30]
 
 **Purpose**: Extract temporal features at multiple frequency resolutions from the raw EEG signal simultaneously, inspired by the Inception module from GoogLeNet.
 
-**Motivation**: EEG signals contain stress-relevant oscillatory patterns across a wide frequency spectrum (theta: 4–8 Hz, alpha: 8–13 Hz, beta: 13–30 Hz, gamma: 30–45 Hz). A single convolutional kernel captures only a narrow frequency band. By deploying three parallel branches with different receptive fields, the model simultaneously captures:
+**Motivation**: EEG signals contain activity at multiple temporal and spectral scales. A single convolutional kernel has a limited temporal receptive field. By deploying three parallel branches with different kernel sizes, the model extracts features over different time spans:
 
 | Branch | Kernel Size | Effective Receptive Field | Target Band |
 |:---|:---|:---|:---|
-| Branch 1 | `(1, 15)` | ~29 ms at 512 Hz | High-beta / Gamma (~34 Hz) |
-| Branch 2 | `(1, 31)` | ~60 ms at 512 Hz | Beta (~16 Hz) |
-| Branch 3 | `(1, 63)` | ~123 ms at 512 Hz | Alpha / Theta (~8 Hz) |
+| Branch 1 | `(1, 15)` | 30 ms at 500 Hz | Short |
+| Branch 2 | `(1, 31)` | 62 ms at 500 Hz | Medium |
+| Branch 3 | `(1, 63)` | 126 ms at 500 Hz | Long |
 
 **Implementation**: Each branch consists of:
 ```
@@ -156,7 +156,7 @@ Conv2D(24, 48, kernel=(30, 1), groups=24, bias=False)
 
 **Purpose**: Recalibrate channel-wise feature responses by explicitly modeling inter-dependencies between the 48 feature channels.
 
-**Motivation**: Not all 48 feature channels (representing different combinations of temporal scale × spatial filter) are equally informative for stress classification. The SE block learns to amplify channels that carry discriminative stress-related information and suppress noisy or redundant channels. This is particularly critical for cross-subject evaluation, where the relative importance of frequency bands varies across individuals.
+**Motivation**: Not all 48 feature channels (representing different combinations of temporal scale × spatial filter) are equally informative for the target categories. The SE block learns to reweight feature channels. This may be useful for cross-subject evaluation, where feature distributions can vary across individuals.
 
 **Implementation**:
 ```
@@ -231,7 +231,7 @@ LayerNorm(40)
 
 ### Block 6: Classification Head (Gentle Funnel)
 
-**Purpose**: Map the rich 2480-dimensional feature representation from the Transformer to the final 3-class stress prediction.
+**Purpose**: Map the rich 2480-dimensional feature representation from the Transformer to the final three-class prediction.
 
 **Implementation**:
 ```
@@ -269,30 +269,32 @@ Flatten [B, 62, 40] → [B, 2480]
 
 ## Dataset
 
-The model is evaluated on the **SADNet EEG Stress Dataset**, consisting of 30-channel EEG recordings from 16 subjects performing cognitive tasks under varying stress levels. Each trial is a 1001-sample segment (~2 seconds at 512 Hz), labeled as one of three stress classes.
+The model uses EEG recordings from the **sustained-attention driving task** dataset. The configured cohort contains 16 subject IDs, and preprocessing now requires all 16 subject directories. The model expects 30 EEG channels; preprocessing explicitly selects and orders the configured electrodes and raises an error if a required channel is missing or ambiguous. Generated arrays and training loaders are checked for the expected 1001-sample by 30-channel shape. Targets are derived from driving-task reaction times: class 2 is the faster-response category, class 1 is the slower-response category, and class 0 covers the intermediate/mixed cases. They are not direct stress measurements. Preprocessing resamples to 500 Hz and extracts 1001 samples around the event.
 
 | Property | Value |
 |:---|:---|
-| Subjects | 16 |
-| Channels | 30 |
-| Sampling Rate | 512 Hz |
-| Trial Length | 1001 samples (~1.95 s) |
-| Classes | 3 (Low / Medium / High Stress) |
+| Configured subject IDs | 16 (preprocessing/training fail if any configured subject directory is missing) |
+| Model input channels | 30 EEG electrodes, explicitly selected in configured order |
+| Sampling Rate | 500 Hz (preprocessing resampling rate) |
+| Trial Length | 1001 samples (2 s, inclusive epoch endpoints) |
+| Classes | 3 (reaction-time-derived: 0 intermediate/mixed, 1 slower, 2 faster) |
 | Compressed Size | ~15.2 GB (ZIP archive) |
 
 ### Subject IDs
 
 `S01, S05, S09, S13, S22, S31, S35, S40, S41, S42, S43, S44, S45, S49, S50, S53`
 
-> **Note**: The raw dataset is distributed as a ~15.2 GB compressed ZIP archive containing per-subject EEG recordings in `.npy` format. After extraction, the dataset occupies approximately 18–20 GB on disk. Each subject folder contains pre-segmented trial data split into training, validation, and test partitions.
+> **Note**: The source is the [pre-processed sustained-attention driving EEG dataset](https://doi.org/10.6084/m9.figshare.7666055.v3), which provides per-session EEG recordings. This repository's preprocessing code derives the three targets from reaction times and saves per-subject arrays. The class labels should not be interpreted as direct stress annotations. The cohort's scientific inclusion/exclusion rationale and actual local recording/channel-name compatibility still require verification.
 
 ---
 
 ## Results
 
+> **Reproduction status:** The tables below are existing results and have not been regenerated using the corrected development-set checkpoint selection, class-aware split, train-only oversampling, explicit Xavier initialization, or verified channel selection. Do not treat them as final or submission-ready results. Rerun the full model and all ablations on the same verified cohort, labels, and splits before reporting comparisons.
+
 ### Intra-Subject Evaluation
 
-In the intra-subject paradigm, the model is trained and tested on data from the **same subject** using a stratified train/validation/test split with oversampling to handle class imbalance.
+In the intra-subject paradigm, the model is trained and tested on data from the **same subject** using a deterministic class-aware train/validation/test split. Oversampling is applied to the training split only; dev/test samples are not resampled.
 
 | Subject | F1 Score (%) | AUC (%) |
 |:---|:---:|:---:|
@@ -319,7 +321,7 @@ In the intra-subject paradigm, the model is trained and tested on data from the 
 
 ### Cross-Subject (LOSO) Evaluation
 
-In the cross-subject paradigm, a **Leave-One-Subject-Out (LOSO)** protocol is used: the model is trained on data from all subjects except one, and tested on the held-out subject. This evaluates the model's ability to generalize across individuals.
+In the cross-subject paradigm, a **Leave-One-Subject-Out (LOSO)** protocol is used: the model is trained on data from all subjects except one, and tested on the held-out subject. The training portion is oversampled to balance its classes; dev and held-out test data are not resampled. This evaluates the model's ability to generalize across individuals.
 
 | Subject | F1 Score (%) | AUC (%) |
 |:---|:---:|:---:|
@@ -384,7 +386,7 @@ Performance comparison with established EEG classification architectures under i
 **Key Observations (Intra-Subject)**:
 - InceptSADNet achieves the **second-highest average F1 score (86.16%)**, closely trailing ShallowConvNet (87.64%) by only 1.48%.
 - InceptSADNet achieves **comparable AUC (93.39%)** to ShallowConvNet (93.74%), with a gap of only 0.35%.
-- InceptSADNet **outperforms all models** on subjects S01, S09, S22, S41, and S44, demonstrating superior temporal feature extraction for subjects with complex multi-band stress signatures.
+- InceptSADNet **outperforms all models** on subjects S01, S09, S22, S41, and S44 in the results shown below.
 - The model achieves the **highest single-subject F1 score of 97.25%** on S40 among all CNN-based methods (excluding ShallowConvNet's 99.09%).
 
 ---
@@ -510,7 +512,7 @@ If you find this work useful, please cite:
 
 ```bibtex
 @misc{inceptsadnet2026,
-  title={InceptSADNet: Inception-based Stress and Affect Detection Network for Multi-class EEG Classification},
+  title={InceptSADNet: Inception-Based EEG Classification for Driving-Task Response Categories},
   year={2026},
   url={https://github.com/P47Parzival/DSADNet}
 }

@@ -1,5 +1,4 @@
 # coding: UTF-8
-import collections
 import os
 import random
 
@@ -8,10 +7,13 @@ import numpy as np
 import pandas as pd
 import time
 from datetime import timedelta
-from imblearn.over_sampling import RandomOverSampler
-from imblearn.under_sampling import RandomUnderSampler
-import collections
-from sklearn.model_selection import train_test_split
+from dataset_contract import (
+    N_EEG_CHANNELS,
+    N_EPOCH_SAMPLES,
+    SPLIT_SEED,
+    oversample_indices,
+    validate_epoch_arrays,
+)
 
 
 # 设置随机数种子，方便复现
@@ -33,51 +35,69 @@ def get_time_dif(start_time):
 
 
 def split_data(X, y):
-    # transfer to 2-d array
-    y_index = X.reshape(X.shape[0], -1).shape[1]
-    data = np.concatenate((X.reshape(X.shape[0], -1), y.reshape(-1, 1)), axis=1)
-    data = pd.DataFrame(data)
-    # sort by y_label
-    data = data.sort_values(y_index)
-    # reset new index
-    data.reset_index(drop=True, inplace=True)
-    # collect the number of labels
-    c = collections.Counter(data[y_index])
-    num = c[0]
-    data_0 = data.iloc[:num, :]
-    data_1 = data.iloc[num:2 * num, :]
-    data_2 = data.iloc[-num:, :]
-    # split the data
-    x0_train, x0_test, y0_train, y0_test = train_test_split(data_0, data_0[y_index], test_size=0.2, random_state=27)
-    x1_train, x1_test, y1_train, y1_test = train_test_split(data_1, data_1[y_index], test_size=0.2, random_state=27)
-    x2_train, x2_test, y2_train, y2_test = train_test_split(data_2, data_2[y_index], test_size=0.2, random_state=27)
+    X = np.asarray(X)
+    y = np.asarray(y).reshape(-1)
+    if X.shape[0] != y.shape[0]:
+        raise ValueError(f"X and y sample counts differ: {X.shape[0]} != {y.shape[0]}")
+    if y.size == 0:
+        raise ValueError("Cannot split an empty dataset.")
 
-    x0_dev, x0_test, y0_dev, y0_test = train_test_split(x0_test, y0_test, test_size=0.5, random_state=27)
-    x1_dev, x1_test, y1_dev, y1_test = train_test_split(x1_test, y1_test, test_size=0.5, random_state=27)
-    x2_dev, x2_test, y2_dev, y2_test = train_test_split(x2_test, y2_test, test_size=0.5, random_state=27)
+    X = X.reshape(X.shape[0], -1)
+    rng = np.random.RandomState(SPLIT_SEED)
+    split_indices = [[], [], []]
 
-    # concatenate
-    # concatenate
-    train_data = pd.concat([x0_train, x1_train, x2_train], ignore_index=True)
-    dev_data = pd.concat([x0_dev, x1_dev, x2_dev], ignore_index=True)
-    test_data = pd.concat([x0_test, x1_test, x2_test], ignore_index=True)
+    for label in np.unique(y):
+        class_indices = np.flatnonzero(y == label)
+        if class_indices.size < 3:
+            raise ValueError(
+                f"Class {label!r} has {class_indices.size} samples; "
+                "at least 3 are required to place samples in train, dev, and test."
+            )
 
-    train_data = train_data.astype(np.float32)
-    dev_data = dev_data.astype(np.float32)
-    test_data = test_data.astype(np.float32)
+        rng.shuffle(class_indices)
+        ideal_sizes = np.asarray([0.8, 0.1, 0.1]) * class_indices.size
+        sizes = np.floor(ideal_sizes).astype(int)
+        sizes = np.maximum(sizes, 1)
 
-    # print(train_data.shape)
-    # print(dev_data.shape)
-    # print(test_data.shape)
-    # print(len(collections.Counter(test_data[30030])))
-    return train_data, dev_data, test_data
+        while sizes.sum() > class_indices.size:
+            reducible = np.flatnonzero(sizes > 1)
+            excess = sizes[reducible] - ideal_sizes[reducible]
+            sizes[reducible[np.argmax(excess)]] -= 1
+
+        while sizes.sum() < class_indices.size:
+            deficit = ideal_sizes - sizes
+            sizes[np.argmax(deficit)] += 1
+
+        train_end = sizes[0]
+        dev_end = train_end + sizes[1]
+        split_indices[0].extend(class_indices[:train_end])
+        split_indices[1].extend(class_indices[train_end:dev_end])
+        split_indices[2].extend(class_indices[dev_end:])
+
+    output = []
+    for indices in split_indices:
+        indices = np.asarray(indices)
+        rng.shuffle(indices)
+        data = np.column_stack((X[indices], y[indices])).astype(np.float32)
+        output.append(pd.DataFrame(data))
+
+    return tuple(output)
 
 
 def trans2DataLoader(data, batch_size=32, shuffle=True, drop_last=False):
     # drop_last：当batch_size较大时，可能会drop掉某类别的全部标签导致分类出错
     X = data.iloc[:, :-1].to_numpy()
     y = data.iloc[:, -1:].to_numpy()
-    dataset = torch.utils.data.TensorDataset(torch.from_numpy(X.reshape(X.shape[0], -1, 30)), torch.from_numpy(y))
+    expected_features = N_EEG_CHANNELS * N_EPOCH_SAMPLES
+    if X.shape[1] != expected_features:
+        raise ValueError(
+            f"Expected {N_EPOCH_SAMPLES} samples x {N_EEG_CHANNELS} EEG channels "
+            f"({expected_features} features per trial); got {X.shape[1]}."
+        )
+    dataset = torch.utils.data.TensorDataset(
+        torch.from_numpy(X.reshape(X.shape[0], -1, N_EEG_CHANNELS)),
+        torch.from_numpy(y),
+    )
     # pin_memory=True speeds up host-to-device transfers (RAM to GPU)
     # num_workers=0 is usually faster for small TensorDatasets on Windows
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, pin_memory=True, num_workers=0)
@@ -98,6 +118,17 @@ def build_cross_datasets(config, subject_name):
     test_x = np.load('data/cross/test_'+subject_name+'_x.npy')
     test_y = np.load('data/cross/test_'+subject_name+'_y.npy')
 
+    train_y = train_y.reshape(-1)
+    dev_y = dev_y.reshape(-1)
+    test_y = test_y.reshape(-1)
+    validate_epoch_arrays(train_x, train_y)
+    validate_epoch_arrays(dev_x, dev_y)
+    validate_epoch_arrays(test_x, test_y)
+
+    if train_y.size:
+        train_indices = oversample_indices(train_y.tolist())
+        train_x = train_x[train_indices]
+        train_y = train_y[train_indices]
     train_dataset = torch.utils.data.TensorDataset(torch.from_numpy(train_x.astype(np.float32)), torch.from_numpy(train_y.astype(np.int64)))
     dev_dataset = torch.utils.data.TensorDataset(torch.from_numpy(dev_x.astype(np.float32)), torch.from_numpy(dev_y.astype(np.int64)))
     test_dataset = torch.utils.data.TensorDataset(torch.from_numpy(test_x.astype(np.float32)), torch.from_numpy(test_y.astype(np.int64)))
@@ -115,18 +146,14 @@ def build_datasets(config, subject_name, mode=False, oversample=True, drop_last=
     if not mode:
         X = np.load(config.data_path + '/' + subject_name + '_x.npy')
         y = np.load(config.data_path + '/' + subject_name + '_y.npy')
+        y = y.reshape(-1)
+        validate_epoch_arrays(X, y)
         print(X.shape)
         print(y.shape)
-    # if oversample:
-    #     ros = RandomOverSampler(random_state=27)
-    # else:
-    #     ros = RandomUnderSampler(random_state=27)
-    # X_res, y_res = ros.fit_resample(X.reshape(X.shape[0], -1), y.reshape(-1, 1))
-    # print(X_res.shape)
-    # print(y_res.shape)
-    # X_res = X_res.reshape(X_res.shape[0], -1, 30)  # reshape
-    # train_data, test_data, dev_data = split_data(X_res, y_res)
     train_data, dev_data, test_data = split_data(X, y)
+    if oversample:
+        train_indices = oversample_indices(train_data.iloc[:, -1].tolist())
+        train_data = train_data.iloc[train_indices].reset_index(drop=True)
     train_loader = trans2DataLoader(train_data, config.batch_size, drop_last=drop_last)
     dev_loader = trans2DataLoader(dev_data, config.batch_size, shuffle=False, drop_last=False)
     test_loader = trans2DataLoader(test_data, config.batch_size, shuffle=False, drop_last=False)

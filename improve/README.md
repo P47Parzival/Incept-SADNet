@@ -4,9 +4,9 @@ This document explains the changes on the `improved-evaluation-protocol` branch.
 
 ## Quick summary
 
-The branch changes the training/evaluation support code in `run.py`, `utils.py`, and `train_test.py`. It also adds CPU-oriented synthetic tests under `tests/` and implementation notes in this folder.
+The branch changes the training/evaluation support code in `run.py`, `utils.py`, `train_test.py`, `make_datasets.py`, and `dataset_contract.py`. It also adds synthetic tests under `tests/` and implementation notes in this folder.
 
-The original network implementation and its four ablation implementations are not changed. Model architecture, optimizer, learning rate, batch size, epoch count, dropout settings, and intra-subject split generation remain as before.
+The original network implementation and its four ablation implementations are not changed. Model architecture, optimizer, learning rate, batch size, epoch count, dropout settings, and split seed remain as before. A follow-up class-aware split change is documented below; it changes intra-subject split membership relative to older runs, so all baseline and ablation models must use the same new split.
 
 | Change | What it addresses |
 |---|---|
@@ -14,7 +14,13 @@ The original network implementation and its four ablation implementations are no
 | Complete, ordered evaluation loaders | Ensures dev/test evaluation includes final partial batches and sees examples in a stable order. |
 | Dev-selected checkpoint; one final test evaluation | Prevents test metrics from choosing the reported model checkpoint. |
 | Per-subject seed and seed-aware paths | Makes a subject's initialization reproducible and separates non-default seed outputs. |
-| Synthetic protocol tests | Checks data routing, evaluation coverage, checkpoint selection, and seed-aware skipping without requiring the real dataset. |
+| Class-aware intra-subject splitting | Uses every sample for unequal class counts instead of selecting/truncating samples based on class 0. |
+| Training-only oversampling | Balances training classes after splitting; dev/test examples are never duplicated. |
+| Explicit Xavier initialization | Applies the documented initializer to Conv/Linear layers for every run while preserving normalization-layer defaults. |
+| Cohort and EEG input contract | Fails on incomplete subject directories, missing/ambiguous EEG channels, incorrect epoch dimensions, or inconsistent labels. |
+| Shared response-time label mapping | Applies the same documented threshold-to-class mapping in both preprocessing label paths. |
+| Explicit undefined-AUC error | Stops when weighted one-vs-rest AUC cannot be computed instead of writing a fallback score. |
+| Synthetic protocol and model tests | Checks data routing, evaluation coverage, checkpoint selection, seed-aware skipping, and five model forward paths. |
 
 ## Why these changes were needed
 
@@ -22,27 +28,33 @@ Before these changes, the train/dev/test split ordering was inconsistent across 
 
 The training loop also measured test F1/AUC at every epoch and saved whichever checkpoint scored best on those test metrics. That uses the test set for model selection and can bias the final reported test result.
 
-Finally, dev/test DataLoaders shuffled and dropped their final partial batches. As a result, evaluation could use a different subset/order between passes and omit some examples.
+Finally, dev/test DataLoaders shuffled and dropped their final partial batches. As a result, evaluation could use a different subset/order between passes and omit some examples. The previous intra-subject splitter also based all class slices on the class-0 count, which could omit samples or select the wrong rows when class counts were unequal.
 
 ## What changed
 
 ### 1. Loader ordering
 
-`split_data` still returns train, dev, test and retains the existing intra-subject split logic and `random_state=27`.
+`split_data` returns train, dev, test. The loader-order correction made its result names and runner call sites consistent; the later class-aware update changed how intra-subject sample membership is created while retaining the fixed split seed 27.
 
 - `utils.build_datasets` now assigns those outputs as `train_data`, `dev_data`, and `test_data`, then builds loaders with the same ordering.
 - The intra-subject and LOSO call sites in `run.py` unpack loaders as `train_iter`, `dev_iter`, and `test_iter`.
 - `build_cross_datasets` and `evaluate_all_subjects.py` already used train/dev/test order, so no change was needed there.
 - For intra-subject data, the corrected construction preserves the split rows previously reaching the dev/test roles through the old double-swap, while subsequent evaluation now includes any last partial batch.
 
-### 2. Complete and deterministic validation/test evaluation
+### 2. Class-aware intra-subject splitting
+
+The later update in `utils.split_data` independently shuffles the indices for each label with fixed random state 27, then assigns approximately 80%/10%/10% of each present class to train/dev/test. It retains all samples even when class counts differ; it no longer assumes class 0 is the smallest or truncates other classes. A present class must have at least three samples so each split gets at least one; otherwise, the function raises a descriptive `ValueError`.
+
+This deliberately changes the split membership from historical runs. Use the updated function for the baseline and every ablation, and do not mix old results with new results.
+
+### 3. Complete and deterministic validation/test evaluation
 
 - Dev/test loaders use `shuffle=False` and `drop_last=False`.
 - Training loaders retain their prior shuffle/drop behavior.
 - Evaluation loss targets are flattened in a way that handles a final batch containing one example.
 - Batch logits are concatenated, so evaluation works when the final batch is smaller than the configured batch size.
 
-### 3. Checkpoint selection and final test
+### 4. Checkpoint selection and final test
 
 At each epoch, the loop calculates validation loss and dev F1/AUC. It saves the best-F1 and best-AUC checkpoints based on **dev** metrics. When training ends, it reloads the best-dev-F1 checkpoint and computes test metrics once. Test F1/AUC therefore refer to the same selected checkpoint.
 
@@ -56,7 +68,7 @@ subject:{id}, mode:{mode}, seed:{seed}, best_epoch:{epoch}, best_dev_f1:{score},
 
 WandB logs train loss, validation loss, and dev metrics per epoch; final test metrics and the selected epoch are logged after training. Recovery checkpoints store dev metrics. If an old-format checkpoint is encountered, its weights are not restored; that subject starts from scratch under the new protocol.
 
-### 4. Seed handling and output folders
+### 5. Seed handling and output folders
 
 `run.py` accepts `--seed` (default `27`) and resets the random seeds at the start of each subject iteration before model initialization. Intra-subject split generation remains fixed at `random_state=27`; the run seed controls model/training randomness, not which rows are assigned to splits.
 
@@ -125,24 +137,32 @@ It checks:
 4. Dev metrics are used for checkpoint selection, and test evaluation happens once after training.
 5. Non-default seed paths and completed-subject resume/skip checks are isolated from seed 27.
 
-At the time of implementation, static Pylance checks and `git diff --check` passed. Runtime tests could not be executed in the available project environment because it lacked PyTorch and pytest. The real-data smoke test and class-count gate also remain to be run locally because `data/raw` and `data/cross` were not present in the workspace.
+At the time of implementation, static Pylance checks and `git diff --check` passed. Runtime tests could not be executed in the available project environment because it lacked PyTorch and pytest. The real-data smoke test and per-subject class-count check also remain to be run locally because `data/raw` and `data/cross` were not present in the workspace.
 
 ## Before generating new paper numbers
 
-1. Run the per-subject class-count gate described in `prd.md`. `split_data` currently uses the class-0 count when selecting examples from each class; if class 0 is not the smallest class, stop and decide how to handle the data before training.
-2. Run the synthetic tests in an environment with the project dependencies and pytest.
-3. Run the local smoke test on the real dataset.
-4. Do not mix checkpoints or summaries from the old protocol with results from this corrected protocol. The owner should clear/archive old outputs before rerunning, as described in `prd.md`.
-5. Report results consistently across baseline and ablations; for multiple seeds, report mean/standard deviation and paired per-subject differences.
+1. Inspect per-subject class counts. Confirm every present class has at least three samples so each can contribute to train/dev/test. The updated splitter retains unequal class counts rather than requiring class 0 to be the smallest.
+2. Run the documented per-subject label-count check and verify label meanings and subject selection against the dataset documentation.
+3. Run the synthetic tests in an environment with the project dependencies and pytest.
+4. Run the local smoke test on the real dataset.
+5. Do not mix checkpoints or summaries from the old protocol/split with results from the corrected protocol. Archive old outputs before rerunning.
+6. Report results consistently across baseline and ablations; for multiple seeds, report mean/standard deviation and paired per-subject differences.
 
 ## Scope and deferred work
 
-This branch does not change the four ablation implementations, model architecture, hyperparameters, split-generation contents, or README result tables. It also does not update `cam.py`. That script needs a separate update before generating CAM figures: it currently has stale model/checkpoint assumptions and directly indexes the Transformer, which is incompatible with the no-Transformer variant.
+The four ablation architectures are unchanged. The class-aware splitter changes intra-subject split membership; train-only oversampling and explicit Xavier initialization also change training relative to historical runs. Rerun every model/seed using the same pipeline; see [07_class_aware_split.md](./07_class_aware_split.md) and [12_training_configuration_and_metrics.md](./12_training_configuration_and_metrics.md). Subject-selection rationale and out-of-list historical results are unresolved, although the code now fails fast if the configured cohort is incomplete; see [08_subject_selection_and_exclusions.md](./08_subject_selection_and_exclusions.md). The source task and reaction-time-derived target semantics are documented in [09_label_semantics_and_task.md](./09_label_semantics_and_task.md). Preprocessing and loaders now enforce the configured sampling/epoch/channel input contract, but actual recording compatibility remains unverified without the local data; see [10_sampling_epoch_channels.md](./10_sampling_epoch_channels.md). Synthetic smoke tests for all five variants are present but not executed in this dependency-limited environment; see [11_model_variant_smoke_tests.md](./11_model_variant_smoke_tests.md). `cam.py` remains unmodified and needs a separate update before generating CAM figures because it directly indexes the Transformer, which is incompatible with the no-Transformer variant.
 
 For step-by-step implementation notes, see:
 
+- [06_wandb_credential_hygiene.md](./06_wandb_credential_hygiene.md)
 - [01_loader_order.md](./01_loader_order.md)
 - [02_complete_evaluation_loaders.md](./02_complete_evaluation_loaders.md)
 - [03_dev_checkpoint_test_once.md](./03_dev_checkpoint_test_once.md)
 - [04_reproducible_seed_paths.md](./04_reproducible_seed_paths.md)
 - [05_protocol_tests_and_validation.md](./05_protocol_tests_and_validation.md)
+- [07_class_aware_split.md](./07_class_aware_split.md)
+- [08_subject_selection_and_exclusions.md](./08_subject_selection_and_exclusions.md)
+- [09_label_semantics_and_task.md](./09_label_semantics_and_task.md)
+- [10_sampling_epoch_channels.md](./10_sampling_epoch_channels.md)
+- [11_model_variant_smoke_tests.md](./11_model_variant_smoke_tests.md)
+- [12_training_configuration_and_metrics.md](./12_training_configuration_and_metrics.md)

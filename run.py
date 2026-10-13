@@ -6,6 +6,7 @@ from importlib import import_module
 
 from train_test import train_MAG, has_completed_subject
 from utils import get_time_dif, build_datasets, set_seed, build_cross_datasets
+from dataset_contract import resolve_subject_names
 from train_test import init_network
 import os
 import warnings
@@ -38,16 +39,17 @@ if torch.cuda.is_available():
 
 # get all subjects path
 def get_all_subjects(dataset):
-    # Filter to only use the 16 subjects from the SADNet paper
-    valid_subjects = ['s01', 's05', 's09', 's13', 's22', 's31', 's35', 's40', 
-                      's41', 's42', 's43', 's44', 's45', 's49', 's50', 's53']
-    data_list = os.listdir(dataset + '/raw')
-    all_subjects = []
-    for subject_name in data_list:
-        if subject_name.lower() in valid_subjects:
-            data_path = dataset + '/raw/' + subject_name  # data/raw/sxx
-            all_subjects.append(data_path)
-    return sorted(all_subjects)
+    """Return all configured subject folders, failing rather than using a partial cohort."""
+    raw_dir = os.path.join(dataset, "raw")
+    if not os.path.isdir(raw_dir):
+        raise FileNotFoundError(f"Raw dataset directory does not exist: {raw_dir}")
+
+    subject_names = [
+        name for name in os.listdir(raw_dir)
+        if os.path.isdir(os.path.join(raw_dir, name))
+    ]
+    ordered_names = resolve_subject_names(subject_names)
+    return [os.path.join(raw_dir, name) for name in ordered_names]
 
 # inner subject
 def inner_subject_train():
@@ -82,6 +84,7 @@ def inner_subject_train():
 
             # train and test
             model = x.Model(config).to(config.device)
+            init_network(model, seed=args.seed)
             
             if args.compile and hasattr(torch, 'compile'):
                 print("Compiling model...")
@@ -128,6 +131,7 @@ def leave_one_subject_out():
 
             # train and test
             model = x.Model(config).to(config.device)
+            init_network(model, seed=args.seed)
             
             if args.compile and hasattr(torch, 'compile'):
                 print("Compiling model...")

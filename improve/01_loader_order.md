@@ -13,7 +13,9 @@ Implements C1 (defects D1 and D2) from `prd.md`.
 
 ## Intra-subject split preservation
 
-`split_data` still uses the same split implementation and `random_state=27`. The old loader construction accidentally swapped dev/test when naming them; the old `run.py` unpacking swapped them back. Updating both sides preserves which split rows are supplied as dev and test to `train_MAG`, while making the API's names match the actual split contents. The separate `evaluate_all_subjects.py` path now receives the correctly identified dev and test data as well.
+At the time of this step, the old loader construction accidentally swapped dev/test when naming them; the old `run.py` unpacking swapped them back. Updating both sides made the API's names match the actual split contents and preserved the original split membership.
+
+**Follow-up:** [07_class_aware_split.md](./07_class_aware_split.md) later changes the intra-subject split algorithm to retain all samples across unequal class counts. Therefore, newly generated intra-subject split membership is no longer identical to the old split. Re-run the baseline and all ablations with the updated split; do not compare new runs directly with numbers produced from the old split.
 
 ## Verification
 

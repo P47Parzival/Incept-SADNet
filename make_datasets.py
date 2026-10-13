@@ -5,12 +5,23 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 from run import get_all_subjects
+from dataset_contract import (
+    EPOCH_TMAX,
+    EPOCH_TMIN,
+    N_EEG_CHANNELS,
+    N_EPOCH_SAMPLES,
+    SAMPLE_RATE,
+    classify_response_time,
+    resolve_eeg_channel_names,
+    stable_seed_for_name,
+    validate_epoch_arrays,
+)
 
 
 # 裁剪event发生前后的数据（tmin, tmax），事件发生的时间结点相对定位为0
 # 只裁剪event发生前2s的数据
-tmin = -2
-tmax = 0
+tmin = EPOCH_TMIN
+tmax = EPOCH_TMAX
 event_id = {'deviation/left': 1, 'deviation/right': 2, 'response/onset': 3,
             'response/offset': 4}
 file_path = 'data/raw'
@@ -19,7 +30,7 @@ file_path = 'data/raw'
 start = 90
 
 # sampel rate
-freq = 500
+freq = SAMPLE_RATE
 
 
 # convert .set to Epochs
@@ -136,27 +147,14 @@ def clf_labels(epochs, percentile=0.05):
     for index, RT in enumerate(global_RTs):
         global_RT = RT[1]
         local_RT = local_RTs[index + start_index][2]
-        if global_RT != 0:
-            if global_RT < 1.5 * alert_RT and local_RT < 1.5 * alert_RT:
-                labels.append([index, 2])
-            elif global_RT > 2.5 * alert_RT and local_RT > 2.5 * alert_RT:
-                labels.append([index, 1])
-            else:
-                labels.append([index, 0])
-        else:
-            if local_RT < 1.5 * alert_RT:
-                labels.append([index, 2])
-            elif local_RT > 2.5 * alert_RT:
-                labels.append([index, 1])
-            else:
-                labels.append([index, 0])
+        labels.append([index, classify_response_time(global_RT, local_RT, alert_RT)])
     return labels
 
 
 # 将同一个被试的所有数据整合到Ys中(仅包含events)
 def analysis_subjects(file_path, tmin, tmax, event_id):
     Ys = []
-    for file in os.listdir(file_path):
+    for file in sorted(os.listdir(file_path)):
         print(file)
         if file[-4:] == ".set":
             epochs = convert_raw2epoch(file_path + '/' + file, tmin, tmax, event_id)
@@ -198,7 +196,7 @@ def load_datasets(subject, underfit_sample=False):
 
 # 为所有的被试准备数据集
 def clf_labels_for_all_subjects(file_path, tmin, tmax, event_id, incremental, percentile=0.05):
-    subject_list = os.listdir(file_path)
+    subject_list = sorted(os.listdir(file_path))
     for subject in subject_list:
         subject_path = file_path + '/' + subject
         print(subject_path)
@@ -213,13 +211,14 @@ def clf_labels_for_all_subjects(file_path, tmin, tmax, event_id, incremental, pe
 # 得到X， y
 def clf_labels_for_subjects(file_path, tmin, tmax, event_id, incremental, percentile=0.05):
     avg_total, alert_RT = cal_alert_RT(file_path, tmin, tmax, event_id, percentile)
-    file_list = os.listdir(file_path)
+    file_list = sorted(os.listdir(file_path))
     X = []
     y = []
     for file_name in file_list:
         print(file_name)
         if file_name[-4:] == '.set':
             epochs = convert_raw2epoch(file_path + '/' + file_name, tmin, tmax, event_id)
+            epochs.pick(resolve_eeg_channel_names(epochs.ch_names))
             df = epochs.to_data_frame(index=['condition', 'epoch', 'time'])
             local_RTs = cal_local_RTs(epochs)
             global_RTs = cal_global_RTs(local_RTs)
@@ -230,30 +229,15 @@ def clf_labels_for_subjects(file_path, tmin, tmax, event_id, incremental, percen
                 epoch = RT[0]
                 global_RT = RT[1]
                 local_RT = local_RTs[index + start_index][2]
-                if global_RT != 0:
-                    if global_RT < 1.5 * alert_RT and local_RT < 1.5 * alert_RT:
-                        labels.append([epoch, 2])
-                    elif global_RT > 2.5 * alert_RT and local_RT > 2.5 * alert_RT:
-                        labels.append([epoch, 1])
-                    else:
-                        labels.append([epoch, 0])
-                # 若global_RT不存在则仅通过local_RT进行判断
-                else:
-                    if local_RT < 1.5 * alert_RT:
-                        labels.append([epoch, 2])
-                    elif local_RT > 2.5 * alert_RT:
-                        labels.append([epoch, 1])
-                    else:
-                        labels.append([epoch, 0])
+                labels.append(
+                    [epoch, classify_response_time(global_RT, local_RT, alert_RT)]
+                )
             for epoch, label in labels:
                 X.append(df.xs(epoch, level='epoch').to_numpy())
                 y.append(label)
-    cs = ['FP1', 'FP2', 'F7', 'F3', 'FZ', 'F4', 'F8', 'FT7', 'FC3', 'FCZ',
-          'FC4', 'FT8', 'T3', 'C3', 'CZ', 'C4', 'T4', 'TP7', 'CP3', 'CPZ',
-          'CP4', 'TP8', 'T5', 'P3', 'PZ', 'P4', 'T6', 'O1', 'OZ', 'O2']
-    # 还需要过采样或者欠采样使得样本平衡
-    X = np.array(X)
-    y = np.array(y)
+    X = np.asarray(X, dtype=np.float32)
+    y = np.asarray(y, dtype=np.int64)
+    validate_epoch_arrays(X, y)
     return X, y
 
 
@@ -319,13 +303,23 @@ def get_cross_subject(subject_name, all_subjects):
             dev_ones.extend(dev_1_data)
             dev_twos.extend(dev_2_data)
 
-    # Convert to float32 numpy arrays
-    return (np.array(train_zeros, dtype=np.float32), 
-            np.array(train_ones, dtype=np.float32), 
-            np.array(train_twos, dtype=np.float32), 
-            np.array(dev_zeros, dtype=np.float32),
-            np.array(dev_ones, dtype=np.float32), 
-            np.array(dev_twos, dtype=np.float32))
+    return tuple(
+        _trial_array(samples)
+        for samples in (
+            train_zeros,
+            train_ones,
+            train_twos,
+            dev_zeros,
+            dev_ones,
+            dev_twos,
+        )
+    )
+
+
+def _trial_array(samples):
+    if not samples:
+        return np.empty((0, N_EPOCH_SAMPLES, N_EEG_CHANNELS), dtype=np.float32)
+    return np.asarray(samples, dtype=np.float32)
 
 
 def flatten(data, data_list):
@@ -343,23 +337,16 @@ def split_data(data):
 
 
 def get_single_subject(subject_name):
-    all_zero = []
-    all_one = []
-    all_two = []
     X = np.load(subject_name + '/' + subject_name[-3:] + '_x.npy')
-    y = np.load(subject_name + '/' + subject_name[-3:] + '_y.npy')
-    for i in range(X.shape[0]):
-        label = int(y[i])
-        if label == 0:
-            all_zero.append(X[i])
-        elif label == 1:
-            all_one.append(X[i])
-        else:
-            all_two.append(X[i])
-    # Convert to float32 to save memory
-    return (np.random.permutation(all_zero).astype(np.float32), 
-            np.random.permutation(all_one).astype(np.float32), 
-            np.random.permutation(all_two).astype(np.float32))
+    y = np.load(subject_name + '/' + subject_name[-3:] + '_y.npy').reshape(-1)
+    validate_epoch_arrays(X, y)
+    rng = np.random.RandomState(
+        stable_seed_for_name(os.path.basename(subject_name))
+    )
+    return tuple(
+        rng.permutation(X[y == label]).astype(np.float32)
+        for label in range(3)
+    )
 
 
 if __name__ == '__main__':

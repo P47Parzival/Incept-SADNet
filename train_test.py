@@ -30,19 +30,24 @@ def has_completed_subject(config, subject_name, mode, seed=27):
 
 # 使用xavier初始化网络权重
 def init_network(model, method='xavier', exclude='embedding', seed=27):
-    for name, w in model.named_parameters():
-        if exclude not in name:
-            if 'weight' in name:
-                if method == 'xavier':
-                    nn.init.xavier_normal_(w)
-                elif method == 'kaiming':
-                    nn.init.kaiming_normal_(w)
-                else:
-                    nn.init.normal_(w)
-            elif 'bias' in name:
-                nn.init.constant_(w, 0)
-            else:
-                pass
+    initializers = {
+        "xavier": nn.init.xavier_normal_,
+        "kaiming": nn.init.kaiming_normal_,
+        "normal": nn.init.normal_,
+    }
+    if method not in initializers:
+        raise ValueError(f"Unsupported weight initialization method: {method}")
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    for name, layer in model.named_modules():
+        if exclude and exclude in name:
+            continue
+        if isinstance(layer, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+            initializers[method](layer.weight)
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
 
 
 def train_epoch(config, model, train_iter, optimizer):
@@ -132,9 +137,18 @@ def test_model(config, model, test_iter, use_zero=False):
     # multi-class auc-roc calculation
     # 这里y_hat经过softmax的概率化后使得其加和为1
     try:
-        auc = roc_auc_score(y_test, F.softmax(torch.Tensor(y_hat), dim=1).numpy(), multi_class='ovr', average='weighted', labels=list(range(config.num_classes)))
-    except ValueError:
-        auc = 0.5  # Default to 0.5 if AUC cannot be calculated (e.g. only one class in y_test)
+        auc = roc_auc_score(
+            y_test,
+            F.softmax(torch.Tensor(y_hat), dim=1).numpy(),
+            multi_class="ovr",
+            average="weighted",
+            labels=list(range(config.num_classes)),
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "Could not compute weighted one-vs-rest ROC AUC for this evaluation "
+            "split. Verify target labels and class coverage."
+        ) from exc
 
     # multi-label的AUC-ROC曲线需要二值化
     # auc = roc_auc_score(y_test, preds)
